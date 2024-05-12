@@ -38,6 +38,7 @@ void lzw_encode(char*input,char*out){
 		code[lmlen]=*input;
 	}
 
+	*out=0;
 	return;
 
 	int i=0;
@@ -151,7 +152,7 @@ The lazy match evaluation is not performed for the fastest compression modes (le
 // using that to look up what the first match is, and how many bits to shift the rest
 //  or, if no match is found, it defers to another table/lookup tree where it can match more input
 // also, have shorter matches occupy the lesser bitvalues, and if two symbols have the same bit length, have them in lexical order. that way, we can deduce the exact values from ONLY the length of the encodings
-// also, inert matching (for deflate): after finding a match, it tries to find a longer one on the next char, and uses that if its longer
+// XXX inert matching (for deflate): after finding a match, it tries to find a longer one on the next char, and uses that if its longer
 //  btw this is recursive, so it can keep repeating this as long as the matches keep getting longer
 
 // XXX argh fuck it this is cpp syntax, and we wanted this to be ansi-c compliant...
@@ -237,6 +238,7 @@ encode:
 make list of all symbols in string
 go thru string, add up their occurences
 figure out tree - gonna need a sorting algorithm
+	not really. since were not exactly SORTING but picking out and combining minimals, 'bubble sort' should be enough
 	discard all that dont occur
 	also, just, idk, cache the tree or smth - transmitting that is not our problem rn
 from tree, make a new list of symbols
@@ -250,6 +252,7 @@ foreach input bit
 	is a symbol?
 		output symbol
 		reset to root
+actually were just gonna pattern-match to table - which is a bit more involved, but works out better
 
 start working on decoder optimisation table? or do we kiss it for now?
 i say we kiss it - might be a bit superfluous for now, but lets at least get it working so far
@@ -272,28 +275,42 @@ void pcons(int at,int*cmem){
 	if(cmem[at+1]){
 		putchar('<');
 		pcons(cmem[at],cmem);
-		putchar(',');
+		//putchar(',');
 		pcons(cmem[at+1],cmem);
 		putchar('>');
 	}else
 		putchar(cmem[at]);
 }
 
-void enumerate(int at,int*cmem,char*codes,char*clen,int path,int plen){
-	if(cmem[at+1]){
-		path<<=1;plen++;
-		enumerate(cmem[at  ],cmem,codes,clen,path  ,plen);
-		enumerate(cmem[at+1],cmem,codes,clen,path+1,plen);
-	}else{
-		codes[cmem[at]-1]=path;clen[cmem[at]-1]=plen;
-		//printf("%c gets code %8b %i\n",cmem[at],path,plen);
+char codes[127],clen[127]; // putting these separate bc figuring out how to calculate them is not yet relevant
+
+void gencodes(){ // if clen is populated, this generates the actual codes
+	int slen=1000,llen=0,code=0; // shortest and longest code lengths, plus code to assign
+	for(int i=0;i<127;i++)if(clen[i]){
+		if(clen[i]<slen)slen=clen[i];
+		if(clen[i]>llen)llen=clen[i];
+	}llen++;
+	for(int len=slen;len<llen;len++){
+		for(int at=0;at<127;at++)if(clen[at]==len)codes[at]=code++;
+		code<<=1;
 	}
 }
 
-char codes[127],clen[127]; // putting these separate bc figuring out how to calculate them is not yet relevant
+void enumerate(int at,int*cmem,int plen){
+	if(cmem[at+1]){ // if has child
+		plen++;
+		enumerate(cmem[at  ],cmem,plen);
+		enumerate(cmem[at+1],cmem,plen);
+	}else
+		clen[cmem[at]-1]=plen;
+}
 
 void pack(char*input,char*out){
-	int cons[1000],freq[1000],max=127,symb=0;
+	int cons[1000],freq[1000], // used to generate frequency tree, uses lisp-like structure
+		max=127, // total symbols in dictionary, later total tree nodes
+		symb=0; // number of symbols actually used (omit later)
+
+	// initialise dict
 	for(int i=0;i<max;i++){
 		cons[2*i  ]=i+1;
 		cons[2*i+1]=0;
@@ -306,11 +323,12 @@ void pack(char*input,char*out){
 		freq[input[i]-1]++;
 	}
 
+	/*
 	printf("frequencies:\n");for(int i=0;i<max;i++)
-	if(freq[i])printf("%c:%i  ",cons[2*i],freq[i]);
-	putchar(10);
+	if(freq[i])printf("%c%i ",cons[2*i],freq[i]);
+	putchar(10);// */
 
-	freq[0]=1000;symb--;
+	freq[0]=100000;symb--; // for comparing against
 	// symb tells us how many unique symbols there are
 	// which is useful, bc this is the number of iterations to build the tree
 	for(int iter=0;iter<symb;iter++){
@@ -325,35 +343,32 @@ void pack(char*input,char*out){
 				else l=i;
 			}
 
-		// XXX make sure (l,r) are in the right order to construct a tree!
-
-		//printf("picked (%i %i) (%i %i) at %i\n",l,r,freq[l],freq[r],max);
-
 		cons[2*max]=l<<1;
 		cons[2*max+1]=r<<1;
 		freq[max]=freq[l]+freq[r];
 		freq[l]=freq[r]=0;
 		max++;
-	}
+	}max--;
 
 	// uuuh idk output tree
 
-	max--;printf("tree:\n");
-	pcons(max<<1,cons);putchar(10);
+	/*printf("tree:\n");
+	pcons(max<<1,cons);putchar(10);// */
 
 	// generate actual codes
 	// uuuh
 	// maybe make this recursive: foreach branch, recursively iterate (while keeping track of sequence so far), and if symbol found, put in dict
-	//char codes[127],clen[127];
 	for(int i=0;i<127;i++)codes[i]=clen[i]=0;
-	enumerate(max<<1,cons,codes,clen,0,0);
-	printf("mappings (lengths denoted separately - i couldnt get printf to cooperate):\n");
-	for(int i=0;i<127;i++)if(clen[i])printf("%c:%8b %i\n",cons[2*i],codes[i],clen[i]);
+	enumerate(max<<1,cons,0);gencodes();
 
+	//printf("mappings (lengths denoted separately - i couldnt get printf to cooperate):\n");
+	//for(int i=0;i<127;i++)if(clen[i])printf("%c:%8b %i\n",cons[2*i],codes[i],clen[i]);
+
+	// bitpacker
 	char bytes,blen,at=0;int outb=0,outat=0;
 	for(char*c=input;*c;c++){
 		bytes=codes[*c-1],blen=clen[*c-1];
-		printf("code %c : %8b:%i at %i\n",*c,bytes,blen,at);
+		//printf("code %c : %8b:%i at %i\n",*c,bytes,blen,at);
 		at+=blen;
 		outb=(outb<<blen)|bytes;
 		if(at>8){
@@ -362,12 +377,54 @@ void pack(char*input,char*out){
 			outb&=(1<<at)-1;
 		}
 	}
-	printf("packed in %i bytes\n",outat);
+	// padding?
+	out[outat++]=outb<<(8-at);
+	out[outat]=0;
+	//printf("packed in %i bytes\n",outat);
 }
 
-void unpack(int*input){
-	// working on it!
+void unpack(char*input){
+	/*
+codes and clen store the codes and their lengths after encoding, so we just use that
+yes its not portable, encoding the table is not the point rn
+get byte of input (i dont think we have codes longer than 8b)
+go thru list of codes
+	match
+	if matches, output, shift input
+regarding input: do the trick with a var tracking which bit of input were at, and have a char we actually match against that is always filled up to 8b
+	*/
+	int at=0;unsigned char match=*input;
+
+	while(input[at>>4]){
+		for(int i=0;i<127;i++){
+			if(clen[i] && match>>(8-clen[i]) == codes[i]){
+				putchar(i+1);at+=clen[i];
+				match=(input[at>>3]<<(at&7)) | (input[(at>>3)+1]>>(8-(at&7)));
+				break;
+			}
+		}
+	}
+	putchar(10);
 }
+
+void packtable(char*out){
+	// dumps code lengths from table to out
+	//for(int i=0;i<127;i++)out[i]=clen[i];
+	// packed a bit - we wont have lengths over 16 anyway
+	for(int i=0;i<63;i++)out[i]=(clen[2*i]<<4)|clen[2*i+1];
+}
+
+void cleartable(){for(int i=0;i<127;i++)codes[i]=clen[i]=0;}
+
+void unpacktable(char*input){
+	// reads code lengths from input and regenerates table
+	for(int i=0,j=0;i<63;i++){
+		clen[j++]=input[i]>>4;
+		clen[j++]=input[i]&0xf;
+	}
+	gencodes();
+}
+
 
 
 
@@ -375,8 +432,9 @@ void unpack(int*input){
 
 void main(){
 	char*data="abcdecdeiifffffgggghhhabcdecdefimmcquineandimheretosayimmcquineandimnowdone",
-	out[1000],i;
+	out[1000],outcode[100],i;
 
+	/*
 	printf("%s\n\nlzw:\n",data);
 	lzw_encode(data,out);
 	for(i=0;out[i];i++)printf("%2x ",out[i]);printf("\n%i bytes\n",i);
@@ -386,13 +444,30 @@ void main(){
 	deflate(data,out);
 	for(i=0;out[i];i++)printf("%2x ",out[i]);printf("\n%i bytes\n",i);
 	inflate(out);
+	*/
 
-	return;
-
-	printf("\nhuffman:\n");
+	/*
+	printf("%s\n\nhuffman:\n",data);
 	pack(data,out);
-	//for(int i=0;out[i];i++)printf("%2x ",out[i]);putchar(10);
-	for(i=0;i<27;i++)printf("%2x ",(unsigned char)out[i]);printf("\n%i bytes\n",i);
+	for(i=0;out[i];i++)printf("%2x ",out[i]);printf("\n%i bytes\n",i);
+	unpack(out);
+
+	for(int i=0;out[i];i++)out[i]=0;
+
+	printf("\nhuffman table coding:\n");
+	for(int i=0;i<127;i++)if(clen[i])printf("%c:%8b %i\n",i,codes[i],clen[i]);
+	packtable(out);
+	for(i=0;i<64;i++)printf("%2x ",out[i]);printf("\n%i bytes\n",i);
+	cleartable();
+	unpacktable(out);
+	for(int i=0;i<127;i++)if(clen[i])printf("%c:%8b %i\n",i,codes[i],clen[i]);
+	*/
+
+	printf("%s\n",data);
+	pack(data,out);packtable(outcode);
+	cleartable();for(int i=0;i<32;i++)printf("%8b ",out[i]);putchar(10);
+	unpacktable(outcode);unpack(out);putchar(10);
+	//printf("out:%s\n",out);
 
 }
 
@@ -400,10 +475,53 @@ void main(){
 //  ...mcquineandimnowdone$ seemed to trigger it
 //  might still be a memory allocation issue
 
-// okayyy, huffman encoding works! now, to figure out how to reverse it!
+// weird, huffman also seems to have an issue with the ending. might be a thing abt padding...
+// ah fuck. we dont reserve null symbol to be file ending, so it misreads that as a code.
+// in the final version well probably have a length indicator, so we wont really need that either
 
 // https://www.cs.ucdavis.edu/~martel/122a/deflate.html <- thats the introductory one that doesnt say HOW to do stuff
 // http://pnrsolution.org/Datacenter/Vol4/Issue1/58.pdf
 // https://www.sobyte.net/post/2022-01/gzip-and-deflate/
 // both found by looking up 'deflate finding matches'
 
+/*
+abcd
+3531
+
+(ad) 4
+((ad)c) 7
+(((ad)c)b) 12
+
+ /\
+b /\ 0
+ c /\ 10
+  d  a 110 111
+
+b0 c10 d110 a111
+a3 b1 c2 d3
+b0 c10 a110 d111
+well fuck
+
+seems like "choose two lowest" is a bit more complicated than we thought...
+'choose two lowest, and if theyre both leaves pick them alphabetically'?
+if theres multiple options for 'lowest', always pick the last (either alphabetically, or in order of addition to list)
+
+a1 b1 c2 d2 e2 f5 g2 i2
+c2 d2 e2 f5 g2 i2 (ab)2
+c2 d2 e2 f5 g2 (i(ab))4
+e2 f5 g2 (i(ab))4 (cd)4
+f5 (i(ab))4 (cd)4 (eg)4
+ah, thats fucked. to generate the 'optimal' tree, wed have to combine (eg)-(i(ab)) - which doesnt really follow any meaningful rule...
+
+a4 b4 c3 d3 e3 f2 g3 i3
+a1110 b1111 c010 d011 e100 f00 g101 i110
+ /  \
+/\  /\
+f/\/\/\
+ cdegi/\
+      ab
+fuck. well, at least we know its the keygen now
+
+aight fuck this shit. generate tree to get code lengths, then completely ignore tree and generate code based on those
+
+*/
